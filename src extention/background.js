@@ -1,4 +1,4 @@
-const HOST_NAME = "com.company.ytdlp_host"; 
+const HOST_NAME = "com.wrapper.ytdlp_host"; 
 console.log("[BG 1] background.js initialized. Host Name:", HOST_NAME);
 
 // --- Helpers ---

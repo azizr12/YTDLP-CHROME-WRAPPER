@@ -1,5 +1,5 @@
 {
-  "name": "com.company.ytdlp_host",
+  "name": "com.wrapper.ytdlp_host",
   "description": "YT-DLP Native Messaging Host",
   "path": "D:\\TEST\\run_host.bat",
   "type": "stdio",
