@@ -33,6 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Get the currently active tab
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab || !tab.url) {
+            console.error("POPUP: No active tab found.");
             statusText.textContent = "Error: No active tab.";
             return;
         }
@@ -50,6 +51,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Send the URL and Options to the background script
+        console.log("2. POPUP: Sending options to background:", options);
         chrome.runtime.sendMessage({
             action: "START_DOWNLOAD",
             url: tab.url,

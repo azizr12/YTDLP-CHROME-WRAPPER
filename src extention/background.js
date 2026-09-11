@@ -28,6 +28,8 @@ function updateBadge(status) {
 
 // Listen for messages from the popup.html
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    console.log("4. BACKGROUND: Received message from popup:", request);
+    
     if (request.action === "START_DOWNLOAD") {
         startDownloadProcess(request.url, request.options);
         sendResponse({ message: "Download process initiated." });
