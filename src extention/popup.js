@@ -54,7 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const options = [];
         if (archiveCheck.checked) options.push("--download-archive", "archive.txt");
         if (noPlaylistCheck.checked) options.push("--no-playlist");
-        if (audioOnlyCheck.checked) options.push("-x", "--audio-format", "mp3");
+        if (audioOnlyCheck.checked) options.push("-f", "bestaudio");
         
         console.log("[POPUP 9] Built options array:", options);
         console.log("[POPUP 10] Sending message to background.js...");

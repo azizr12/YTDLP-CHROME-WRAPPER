@@ -4,27 +4,75 @@
   <style>
     body {
       width: 250px;
-      font-family: Arial, sans-serif;
+      font-family: 'Segoe UI', Roboto, Arial, sans-serif;
       padding: 15px;
-      background-color: #f9f9f9;
+      background-color: #202124; /* Deep dark background */
+      color: #e8eaed; /* Light text for readability */
+      margin: 0;
     }
-    h3 { margin-top: 0; font-size: 16px; border-bottom: 1px solid #ccc; padding-bottom: 5px;}
-    .option { margin-bottom: 10px; display: flex; align-items: center; }
-    .option label { margin-left: 8px; font-size: 14px; cursor: pointer;}
+    
+    h3 { 
+      margin-top: 0; 
+      font-size: 15px; 
+      font-weight: 500;
+      border-bottom: 1px solid #3c4043; /* Subtle dark gray border */
+      padding-bottom: 10px;
+      margin-bottom: 15px;
+      color: #e8eaed;
+    }
+    
+    .option { 
+      margin-bottom: 12px; 
+      display: flex; 
+      align-items: center; 
+    }
+    
+    .option label { 
+      margin-left: 10px; 
+      font-size: 13px; 
+      cursor: pointer;
+      user-select: none; /* Prevents text highlighting when clicking */
+      color: #e8eaed;
+    }
+
+    /* Style checkboxes for dark mode */
+    .option input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #8ab4f8; /* Light blue when checked */
+      cursor: pointer;
+      margin: 0;
+    }
+    
     button {
       width: 100%;
       padding: 10px;
-      background-color: #4285F4;
-      color: white;
+      background-color: #8ab4f8; /* Light blue button for dark mode contrast */
+      color: #202124; /* Dark text on light button */
       border: none;
       border-radius: 4px;
       cursor: pointer;
-      font-size: 14px;
+      font-size: 13px;
       font-weight: bold;
-      margin-top: 10px;
+      margin-top: 15px;
+      transition: background-color 0.2s ease;
     }
-    button:hover { background-color: #3367D6; }
-    #status { font-size: 12px; color: #555; text-align: center; margin-top: 10px; height: 15px;}
+    
+    button:hover { 
+      background-color: #aecbfa; 
+    }
+    
+    button:active {
+      background-color: #669df6;
+    }
+    
+    #status { 
+      font-size: 12px; 
+      color: #9aa0a6; /* Medium gray for status messages */
+      text-align: center; 
+      margin-top: 12px; 
+      height: 15px;
+    }
   </style>
 </head>
 <body>
@@ -35,14 +83,16 @@
     <label for="archive">Use Archive (Prevent duplicates)</label>
   </div>
 
-  <div class="option">
-    <input type="checkbox" id="no-playlist" checked>
-    <label for="no-playlist">No Playlist (Single video only)</label>
-  </div>
 
   <div class="option">
     <input type="checkbox" id="audio-only">
-    <label for="audio-only">Audio Only (MP3)</label>
+    <label for="audio-only">Audio Only</label>
+  </div>
+
+
+  <div class="option">
+    <input type="checkbox" id="no-playlist" checked>
+    <label for="no-playlist">No Playlist (Uncheck for PLaylist download)</label>
   </div>
 
   <button id="download-btn">Download Current Tab</button>
