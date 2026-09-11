@@ -59,8 +59,11 @@ def send_message(message_dict):
     sys.stdout.buffer.write(encoded_content)
     sys.stdout.buffer.flush()
 
+
+#        '--paths', f'home:{os.path.join(os.path.expanduser("~"), "Downloads")}',
+#        '--paths', f'temp:{tempfile.gettempdir()}',
 # ==============================================================================
-# 3. Core Execution Logic (With Fallback Strategy)
+# 3. Core Execution Logic (With 4-Layer Fallback Strategy)
 # ==============================================================================
 def process_download_request(request):
     url = request.get('url')
@@ -72,41 +75,46 @@ def process_download_request(request):
         logging.error("No URL provided in request.")
         return {"status": "error", "message": "No URL provided in request"}
 
-    # Base command arguments (Robust format selector and web clients)
+    # Base command arguments
     base_args = [
         str(YTDLP_PATH),
-        '--ffmpeg-location', str(FFMPEG_PATH),
-        '-f', 'bv*+ba/b', 
-        '--merge-output-format', 'mp4',
-        # FIX: Use 'home' for final downloads, and 'temp' for intermediate files
-        '--paths', f'home:{os.path.join(os.path.expanduser("~"), "Downloads")}',
-        '--paths', f'temp:{tempfile.gettempdir()}',
-        '-o', '%(title)s.%(ext)s', # Just the filename, the 'home' path handles the folder
-        '--extractor-args', 'youtube:player_client=web,mweb',
         str(url)
     ]
 
-    attempt = 1
-    # If we have cookies, we allow up to 2 attempts. Otherwise, just 1.
-    max_attempts = 2 if cookies_data else 1
+    # Prepare cookies file ONCE if data is provided (more efficient than rewriting it per attempt)
+    cookies_file_ready = False
+    if cookies_data:
+        try:
+            with open(COOKIES_FILE_PATH, 'w', encoding='utf-8') as f:
+                f.write(cookies_data)
+            cookies_file_ready = True
+            logging.info(f"Cookies successfully written to {COOKIES_FILE_PATH}")
+        except Exception as e:
+            logging.error(f"Failed to write cookies.txt: {e}")
+
+    # Define the 4 fallback layers
+    # Note: We use "%(id)s.%(ext)s" to save the file by its ID in the script's directory.
+    variations = [
+        {"desc": "Standard (No cookies)", "args": [], "needs_cookies": False},
+        {"desc": "Standard (With cookies)", "args": ['--cookies', str(COOKIES_FILE_PATH)], "needs_cookies": True},
+        {"desc": "ID-only filename (No cookies)", "args": ['-o', '%(id)s.%(ext)s'], "needs_cookies": False},
+        {"desc": "ID-only filename (With cookies)", "args": ['-o', '%(id)s.%(ext)s', '--cookies', str(COOKIES_FILE_PATH)], "needs_cookies": True}
+    ]
+
+    attempt_num = 0
     result = None
+    last_error_msg = "Unknown error"
 
-    while attempt <= max_attempts:
+    for variation in variations:
+        # Skip cookie layers if the extension didn't send us any cookies
+        if variation["needs_cookies"] and not cookies_file_ready:
+            continue
+            
+        attempt_num += 1
         command = base_args.copy()
+        command.extend(variation["args"])
         
-        # CASE 2: If this is the second attempt and we have cookies, use them
-        if attempt == 2 and cookies_data:
-            logging.info(f"[ATTEMPT 2] Initial download failed. Retrying WITH cookies.")
-            try:
-                with open(COOKIES_FILE_PATH, 'w', encoding='utf-8') as f:
-                    f.write(cookies_data)
-                command.extend(['--cookies', str(COOKIES_FILE_PATH)])
-            except Exception as e:
-                logging.error(f"Failed to write cookies.txt: {e}")
-                break
-        else:
-            logging.info(f"[ATTEMPT {attempt}] Executing yt-dlp (WITHOUT cookies).")
-
+        logging.info(f"[ATTEMPT {attempt_num}] Strategy: {variation['desc']}")
         logging.info(f"Executing command: {' '.join(command)}")
         
         # Execute yt-dlp
@@ -119,20 +127,20 @@ def process_download_request(request):
             errors='replace'
         )
 
-        logging.info(f"--- yt-dlp Attempt {attempt} Output Start ---")
+        logging.info(f"--- yt-dlp Attempt {attempt_num} Output Start ---")
         for line in result.stdout.splitlines():
             logging.info(f"yt-dlp: {line}")
-        logging.info(f"--- yt-dlp Attempt {attempt} Output End ---")
+        logging.info(f"--- yt-dlp Attempt {attempt_num} Output End ---")
 
         if result.returncode == 0:
-            logging.info(f"Download completed successfully on attempt {attempt}.")
+            logging.info(f"Download completed successfully on attempt {attempt_num}.")
             break # Success, exit the loop
         else:
-            logging.warning(f"Attempt {attempt} failed with return code {result.returncode}.")
-            if attempt < max_attempts:
-                logging.info("Preparing for fallback attempt...")
-        
-        attempt += 1
+            logging.warning(f"Attempt {attempt_num} failed with return code {result.returncode}.")
+            # Capture the last line of yt-dlp output to send back to Chrome if all attempts fail
+            output_lines = result.stdout.splitlines()
+            if output_lines:
+                last_error_msg = output_lines[-1]
 
     # Final cleanup: Always delete the cookies file for security
     if os.path.exists(COOKIES_FILE_PATH):
@@ -144,9 +152,9 @@ def process_download_request(request):
 
     # Return final status to Chrome
     if result and result.returncode == 0:
-        return {"status": "success", "message": f"Download completed on attempt {attempt}"}
+        return {"status": "success", "message": f"Download completed on attempt {attempt_num}"}
     else:
-        return {"status": "error", "message": "All download attempts failed. Check downloader.log."}
+        return {"status": "error", "message": f"All attempts failed. Last error: {last_error_msg}"}
 # ==============================================================================
 # 4. Main Event Loop
 # ==============================================================================
