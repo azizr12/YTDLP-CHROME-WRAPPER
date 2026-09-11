@@ -6,7 +6,7 @@ const HOST_NAME = "com.wrapper.ytdlp_host";
 function showNotification(id, title, message) {
     chrome.notifications.create(id, {
         type: 'basic',
-        iconUrl: 'icon128.png', // Ensure you have this file in your extension folder!
+        iconUrl: 'icon128.png',
         title: title,
         message: message,
         priority: 2
@@ -41,11 +41,11 @@ function updateBadge(status) {
 // ---------------------------------------------------------
 chrome.action.onClicked.addListener(async (tab) => {
     if (!tab.url || tab.url.startsWith('chrome') || tab.url.startsWith('edge')) {
-        showNotification('error', 'Downloader', 'Cannot download from internal browser pages.');
+        showNotification('error', 'Downloader', 'FAILED !!');
         return;
     }
 
-    showNotification('start', 'Downloader', 'Extracting cookies and starting download...');
+    showNotification('start', 'Downloader', 'Start downloading...');
     updateBadge("downloading");
 
     try {
