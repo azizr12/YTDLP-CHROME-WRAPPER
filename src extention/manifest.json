@@ -1,0 +1,18 @@
+   {
+     "name": "YT-DLP Auto Downloader",
+     "version": "1.0",
+     "manifest_version": 3,
+     "description": "One-click video downloading via local yt-dlp.",
+     "permissions": [
+       "nativeMessaging",
+       "cookies",
+       "activeTab"
+     ],
+     "host_permissions": ["<all_urls>"],
+     "background": {
+       "service_worker": "background.js"
+     },
+     "action": {
+       "default_title": "Download Video"
+     }
+   }
