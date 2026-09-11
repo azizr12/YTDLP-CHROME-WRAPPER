@@ -70,7 +70,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 statusText.textContent = "Error: " + chrome.runtime.lastError.message;
             } else {
                 console.log("[POPUP 11] SUCCESS: Message delivered to background.js. Response:", response);
-                statusText.textContent = "Sent to Python!";
+                statusText.textContent = "Sent to Receiver!";
                 setTimeout(() => window.close(), 1500);
             }
         });
