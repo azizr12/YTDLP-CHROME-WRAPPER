@@ -5,7 +5,7 @@ import sys
 
 # Paths
 MANIFEST_PATH = r"D:\TEST\com.company.ytdlp_host.json"
-HOST_NAME = "com.company.ytdlp_host"
+HOST_NAME = "com.wrapper.ytdlp_host"
 REGISTRY_PATH = r"Software\Google\Chrome\NativeMessagingHosts"
 BAT_PATH = r"D:\TEST\run_host.bat"
 

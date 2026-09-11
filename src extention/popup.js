@@ -1,3 +1,5 @@
+console.log("[POPUP 1] popup.js loaded and DOM is ready.");
+
 document.addEventListener('DOMContentLoaded', () => {
     const archiveCheck = document.getElementById('archive');
     const noPlaylistCheck = document.getElementById('no-playlist');
@@ -5,16 +7,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const downloadBtn = document.getElementById('download-btn');
     const statusText = document.getElementById('status');
 
-    // 1. Load saved settings when popup opens
+    console.log("[POPUP 2] Loading saved settings from Chrome Storage...");
+    
+    // 1. Load saved settings
     chrome.storage.local.get(['archive', 'noPlaylist', 'audioOnly'], (result) => {
-        // Default to true for archive and no-playlist if not set yet
+        console.log("[POPUP 3] Storage result received:", result);
+        
         archiveCheck.checked = result.archive !== false; 
         noPlaylistCheck.checked = result.noPlaylist !== false; 
         audioOnlyCheck.checked = result.audioOnly === true; 
+        
+        console.log("[POPUP 4] Checkboxes set. Archive:", archiveCheck.checked, "NoPlaylist:", noPlaylistCheck.checked, "Audio:", audioOnlyCheck.checked);
     });
 
-    // 2. Auto-save settings whenever a box is clicked
+    // 2. Auto-save settings
     const saveSettings = () => {
+        console.log("[POPUP 5] Checkbox clicked. Saving new state to storage...");
         chrome.storage.local.set({
             archive: archiveCheck.checked,
             noPlaylist: noPlaylistCheck.checked,
@@ -26,42 +34,43 @@ document.addEventListener('DOMContentLoaded', () => {
     noPlaylistCheck.addEventListener('change', saveSettings);
     audioOnlyCheck.addEventListener('change', saveSettings);
 
-    // 3. Handle the "Download" button click
+    // 3. Handle Download Button
     downloadBtn.addEventListener('click', async () => {
+        console.log("[POPUP 6] >>> DOWNLOAD BUTTON CLICKED <<<");
         statusText.textContent = "Starting...";
         
-        // Get the currently active tab
+        console.log("[POPUP 7] Querying Chrome for the active tab...");
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        
         if (!tab || !tab.url) {
-            console.error("POPUP: No active tab found.");
+            console.error("[POPUP ERROR] Could not find active tab or URL is invalid.");
             statusText.textContent = "Error: No active tab.";
             return;
         }
+        
+        console.log("[POPUP 8] Active tab found. URL:", tab.url);
 
-        // Build the options array based on the checkboxes
+        // Build options array
         const options = [];
-        if (archiveCheck.checked) {
-            options.push("--download-archive", "archive.txt");
-        }
-        if (noPlaylistCheck.checked) {
-            options.push("--no-playlist");
-        }
-        if (audioOnlyCheck.checked) {
-            options.push("-x", "--audio-format", "mp3");
-        }
+        if (archiveCheck.checked) options.push("--download-archive", "archive.txt");
+        if (noPlaylistCheck.checked) options.push("--no-playlist");
+        if (audioOnlyCheck.checked) options.push("-x", "--audio-format", "mp3");
+        
+        console.log("[POPUP 9] Built options array:", options);
+        console.log("[POPUP 10] Sending message to background.js...");
 
-        // Send the URL and Options to the background script
-        console.log("2. POPUP: Sending options to background:", options);
+        // Send to background
         chrome.runtime.sendMessage({
             action: "START_DOWNLOAD",
             url: tab.url,
             options: options
         }, (response) => {
             if (chrome.runtime.lastError) {
-                statusText.textContent = "Error communicating with background.";
+                console.error("[POPUP ERROR] Failed to reach background.js:", chrome.runtime.lastError.message);
+                statusText.textContent = "Error: " + chrome.runtime.lastError.message;
             } else {
+                console.log("[POPUP 11] SUCCESS: Message delivered to background.js. Response:", response);
                 statusText.textContent = "Sent to Python!";
-                // Close the popup after 1.5 seconds so you can watch the desktop notification
                 setTimeout(() => window.close(), 1500);
             }
         });
