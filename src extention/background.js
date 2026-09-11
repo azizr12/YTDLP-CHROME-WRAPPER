@@ -1,12 +1,9 @@
-const HOST_NAME = "com.wrapper.ytdlp_host"; 
+const HOST_NAME = "com.company.ytdlp_host"; 
 
-// ---------------------------------------------------------
-// 1. Helper: Desktop Notifications
-// ---------------------------------------------------------
 function showNotification(id, title, message) {
     chrome.notifications.create(id, {
         type: 'basic',
-        iconUrl: 'icon128.png',
+        iconUrl: 'icon128.png', 
         title: title,
         message: message,
         priority: 2
@@ -15,42 +12,40 @@ function showNotification(id, title, message) {
     });
 }
 
-// ---------------------------------------------------------
-// 2. Helper: Update Toolbar Icon (Badge)
-// ---------------------------------------------------------
 function updateBadge(status) {
     if (status === "success") {
         chrome.action.setBadgeText({ text: "✓" });
-        chrome.action.setBadgeBackgroundColor({ color: "#4CAF50" }); // Green
+        chrome.action.setBadgeBackgroundColor({ color: "#4CAF50" }); 
     } else if (status === "error") {
         chrome.action.setBadgeText({ text: "!" });
-        chrome.action.setBadgeBackgroundColor({ color: "#F44336" }); // Red
+        chrome.action.setBadgeBackgroundColor({ color: "#F44336" }); 
     } else if (status === "downloading") {
         chrome.action.setBadgeText({ text: "⏳" });
-        chrome.action.setBadgeBackgroundColor({ color: "#FF9800" }); // Orange
+        chrome.action.setBadgeBackgroundColor({ color: "#FF9800" }); 
     }
-    
-    // Clear the badge after 15 seconds
-    setTimeout(() => {
-        chrome.action.setBadgeText({ text: "" });
-    }, 15000);
+    setTimeout(() => chrome.action.setBadgeText({ text: "" }), 15000);
 }
 
-// ---------------------------------------------------------
-// 3. Main Click Handler (Using Persistent Ports)
-// ---------------------------------------------------------
-chrome.action.onClicked.addListener(async (tab) => {
-    if (!tab.url || tab.url.startsWith('chrome') || tab.url.startsWith('edge')) {
-        showNotification('error', 'Downloader', 'FAILED !!');
+// Listen for messages from the popup.html
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "START_DOWNLOAD") {
+        startDownloadProcess(request.url, request.options);
+        sendResponse({ message: "Download process initiated." });
+        return true; 
+    }
+});
+
+async function startDownloadProcess(url, options) {
+    if (!url || url.startsWith('chrome') || url.startsWith('edge')) {
+        showNotification('error', 'Downloader', 'Cannot download from internal browser pages.');
         return;
     }
 
-    showNotification('start', 'Downloader', 'Start downloading...');
+    showNotification('start', 'Downloader', 'Extracting cookies and starting download...');
     updateBadge("downloading");
 
     try {
-        // Extract Cookies
-        const cookies = await chrome.cookies.getAll({ url: tab.url });
+        const cookies = await chrome.cookies.getAll({ url: url });
         let cookieString = "# Netscape HTTP Cookie File\n";
         cookies.forEach(cookie => {
             const domain = cookie.domain.startsWith('.') ? cookie.domain : '.' + cookie.domain;
@@ -61,44 +56,35 @@ chrome.action.onClicked.addListener(async (tab) => {
             cookieString += `${domain}\t${flag}\t${path}\t${secure}\t${expiration}\t${cookie.name}\t${cookie.value}\n`;
         });
 
-        // OPEN A PERSISTENT PORT TO PYTHON
-        // This prevents Chrome from killing the connection during long downloads
         const port = chrome.runtime.connectNative(HOST_NAME);
         
-        // Listen for messages coming BACK from Python
         port.onMessage.addListener((response) => {
-            console.log("Received message from Python:", response);
-            
             if (response && response.status === "success") {
-                // SUCCESS MESSAGE HANDLING
-                showNotification('success', 'Download Complete!', 'Your video has been saved to the Downloads folder.');
+                showNotification('success', 'Download Complete!', response.message || 'Saved to folder.');
                 updateBadge("success");
-                
             } else if (response && response.status === "error") {
-                // ERROR MESSAGE HANDLING
-                showNotification('error', 'Download Failed', response.message || 'Check downloader.log for details.');
+                showNotification('error', 'Download Failed', response.message || 'Check downloader.log.');
                 updateBadge("error");
             }
         });
 
-        // Handle unexpected disconnections
         port.onDisconnect.addListener(() => {
             if (chrome.runtime.lastError) {
-                console.error("Native host disconnected:", chrome.runtime.lastError.message);
-                showNotification('error', 'Connection Lost', 'The Python background process crashed. Check downloader.log.');
+                showNotification('error', 'Connection Lost', 'Python process crashed.');
                 updateBadge("error");
             }
         });
 
-        // Send the payload to Python
+        // Send URL, Cookies, AND the UI Options to Python
         port.postMessage({ 
             action: "download", 
-            url: tab.url, 
-            cookies: cookieString 
+            url: url, 
+            cookies: cookieString,
+            options: options 
         });
 
     } catch (error) {
         showNotification('error', 'Extension Error', 'Failed to extract cookies: ' + error.message);
         updateBadge("error");
     }
-});
+}

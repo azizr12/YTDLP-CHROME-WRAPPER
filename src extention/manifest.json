@@ -1,18 +1,20 @@
 {
   "name": "YT-DLP Auto Downloader",
-  "version": "1.0",
+  "version": "1.1",
   "manifest_version": 3,
   "permissions": [
     "activeTab",
     "cookies",
     "nativeMessaging",
-    "notifications"
+    "notifications",
+    "storage"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Download Video"
+    "default_popup": "popup.html",
+    "default_title": "YT-DLP Downloader Settings"
   }
 }
