@@ -724,6 +724,7 @@ def process_download_request(request, config):
     url = request.get('url')
     cookies_data = request.get('cookies')
     
+    # 1. Parse Custom Options from Extension and INI
     ext_options_raw = request.get('options', [])
     ext_options = shlex.split(ext_options_raw) if isinstance(ext_options_raw, str) else ext_options_raw
     
@@ -733,28 +734,33 @@ def process_download_request(request, config):
     custom_options = ini_options + ext_options
     debug_mode = config.getboolean('Settings', 'debug', fallback=False)
     
-    # Get and ensure download directory exists
-    download_dir = config.get('Settings', 'download_dir', fallback=get_default_download_dir())
-    pathlib.Path(download_dir).mkdir(parents=True, exist_ok=True)
+    # 2. Define Export and Temp Directories
+    export_dir = config.get('Settings', 'download_dir', fallback=get_default_download_dir())
+    export_path = pathlib.Path(export_dir)
+    export_path.mkdir(parents=True, exist_ok=True)
     
-    update_status(f"Processing: {url[:40]}...")
-    terminal_log(f"Received request for URL: {url}")
-    terminal_log(f"Target Download Directory: {download_dir}")
+    temp_dir = SCRIPT_DIR / "temp_downloads"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    logging.info(f"Received request for URL: {url}")
+    logging.info(f"Temp Directory: {temp_dir}")
+    logging.info(f"Export Directory: {export_path}")
+    
+    if debug_mode:
+        print(f"[DEBUG] URL: {url}", file=sys.stderr)
+        print(f"[DEBUG] Custom Options: {custom_options}", file=sys.stderr)
 
     if not url:
+        logging.error("No URL provided in request.")
         return {"status": "error", "message": "No URL provided in request"}
 
-    if not YTDLP_PATH.exists():
-        return {"status": "error", "message": "yt-dlp.exe is missing and failed to download."}
-
-    # Build absolute output templates so every attempt writes into download_dir,
-    # regardless of whether -P (paths) alone is honored by the chosen strategy.
-    standard_outtmpl = str(pathlib.Path(download_dir) / '%(title)s.%(ext)s')
-    id_only_outtmpl = str(pathlib.Path(download_dir) / '%(id)s.%(ext)s')
-
-    # Still pass -P as a safety net/fallback path resolver
-    # Added '--newline' to force yt-dlp to output progress line-by-line
-    base_args = [str(YTDLP_PATH), '-P', download_dir, '--newline']
+    # 3. Setup yt-dlp arguments with built-in temp-to-export path handling
+    # yt-dlp will download to 'temp' and automatically move to 'home' (export) on success
+    base_args = [
+        str(YTDLP_PATH),
+        '-P', f'temp:{temp_dir},home:{export_path}',
+        '--newline'  # Ensures line-by-line output for live logging
+    ]
 
     cookies_file_ready = False
     if cookies_data:
@@ -762,22 +768,23 @@ def process_download_request(request, config):
             with open(COOKIES_FILE_PATH, 'w', encoding='utf-8') as f:
                 f.write(cookies_data)
             cookies_file_ready = True
+            logging.info(f"Cookies successfully written to {COOKIES_FILE_PATH}")
         except Exception as e:
-            terminal_log(f"Failed to write cookies.txt: {e}")
+            logging.error(f"Failed to write cookies.txt: {e}")
 
-    # Every variation now explicitly includes -o with a full absolute path
-    # into download_dir, so the destination folder is always respected.
+    # 4-Layer Fallback Strategy
     variations = [
-        {"desc": "Standard (No cookies)", "args": ['-o', standard_outtmpl], "needs_cookies": False},
-        {"desc": "Standard (With cookies)", "args": ['-o', standard_outtmpl, '--cookies', str(COOKIES_FILE_PATH)], "needs_cookies": True},
-        {"desc": "ID-only filename (No cookies)", "args": ['-o', id_only_outtmpl], "needs_cookies": False},
-        {"desc": "ID-only filename (With cookies)", "args": ['-o', id_only_outtmpl, '--cookies', str(COOKIES_FILE_PATH)], "needs_cookies": True}
+        {"desc": "Standard (No cookies)", "args": [], "needs_cookies": False},
+        {"desc": "Standard (With cookies)", "args": ['--cookies', str(COOKIES_FILE_PATH)], "needs_cookies": True},
+        {"desc": "ID-only filename (No cookies)", "args": ['-o', '%(id)s.%(ext)s'], "needs_cookies": False},
+        {"desc": "ID-only filename (With cookies)", "args": ['-o', '%(id)s.%(ext)s', '--cookies', str(COOKIES_FILE_PATH)], "needs_cookies": True}
     ]
 
     attempt_num = 0
     last_error_msg = "Unknown error"
     success = False
 
+    # Ensure subprocess can find ffmpeg/yt-dlp in SCRIPT_DIR
     env = os.environ.copy()
     env["PATH"] = str(SCRIPT_DIR) + os.pathsep + env.get("PATH", "")
 
@@ -786,14 +793,21 @@ def process_download_request(request, config):
             continue
             
         attempt_num += 1
+        
+        # Construct final command
         command = base_args.copy()
         command.extend(custom_options)
         command.extend(variation["args"])
         command.append(str(url))
         
-        update_status(f"Attempt {attempt_num}: {variation['desc']}")
-        terminal_log(f"[ATTEMPT {attempt_num}] Strategy: {variation['desc']}")
+        logging.info(f"[ATTEMPT {attempt_num}] Strategy: {variation['desc']}")
+        logging.info(f"Executing command: {' '.join(command)}")
         
+        if debug_mode:
+            print(f"\n[DEBUG] === ATTEMPT {attempt_num} ===", file=sys.stderr)
+            print(f"[DEBUG] Command: {' '.join(command)}", file=sys.stderr)
+
+        # LIVE STREAMING EXECUTION
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -802,37 +816,49 @@ def process_download_request(request, config):
             encoding='utf-8',
             errors='replace',
             env=env,
-            creationflags=SUBPROCESS_FLAGS
+            creationflags=SUBPROCESS_FLAGS  # Keeps execution silent on Windows
         )
 
+        logging.info(f"--- yt-dlp Attempt {attempt_num} Output Start ---")
         output_lines = []
+        
         for line in process.stdout:
             clean_line = line.strip()
             if clean_line:
                 output_lines.append(clean_line)
-                # Log all yt-dlp output to the console wrapper to show real-time download progress
-                terminal_log(clean_line)
+                logging.info(f"yt-dlp: {clean_line}")
+                
+                if debug_mode:
+                    print(f"[DEBUG] {clean_line}", file=sys.stderr)
                     
+        logging.info(f"--- yt-dlp Attempt {attempt_num} Output End ---")
+        
         process.wait()
         returncode = process.returncode
 
         if returncode == 0:
+            logging.info(f"Download completed successfully on attempt {attempt_num}. File moved to export path.")
             success = True
             break
         else:
+            logging.warning(f"Attempt {attempt_num} failed with return code {returncode}.")
             if output_lines:
                 last_error_msg = output_lines[-1]
 
+    # Cleanup cookies
     if os.path.exists(COOKIES_FILE_PATH):
-        try: os.remove(COOKIES_FILE_PATH)
-        except: pass
+        try:
+            os.remove(COOKIES_FILE_PATH)
+            logging.info("Cleaned up cookies.txt successfully.")
+        except Exception as e:
+            logging.error(f"Failed to delete cookies.txt: {e}")
 
     if success:
-        update_status("Completed Successfully!")
         return {"status": "success", "message": f"Download completed on attempt {attempt_num}"}
     else:
-        update_status("Failed. Check logs.")
         return {"status": "error", "message": f"All attempts failed. Last error: {last_error_msg}"}
+
+
 
 def load_config():
     config = configparser.ConfigParser()
