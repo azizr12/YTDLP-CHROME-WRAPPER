@@ -917,16 +917,29 @@ def setup_bridge():
     # 2. Define Paths (All in SCRIPT_DIR)
     HOST_NAME = "com.wrapper.ytdlp_host"
     MANIFEST_PATH = SCRIPT_DIR / f"{HOST_NAME}.json"
-    
-    # Point directly to this executable (if frozen) or the python script
-    if getattr(sys, 'frozen', False):
-        EXEC_PATH = str(sys.executable)
-    else:
-        EXEC_PATH = f'python "{pathlib.Path(__file__).resolve()}"'
-        
     REGISTRY_PATH = r"Software\Google\Chrome\NativeMessagingHosts"
     
-    # 3. Create JSON Manifest
+    # 3. Determine Execution Path
+    # Chrome Native Messaging REQUIRES the manifest 'path' to be a direct executable.
+    # It does NOT support "python script.py" directly. We must use a .bat wrapper if not frozen.
+    if getattr(sys, 'frozen', False):
+        EXEC_PATH = str(sys.executable)
+        terminal_log("[BRIDGE] Detected frozen executable. Pointing manifest directly to .exe")
+    else:
+        BAT_PATH = SCRIPT_DIR / "run_host.bat"
+        # Create a robust batch file wrapper that passes all arguments (%*)
+        bat_content = f'@echo off\n"{sys.executable}" "{pathlib.Path(__file__).resolve()}" %*\n'
+        try:
+            with open(BAT_PATH, 'w', encoding='utf-8') as f:
+                f.write(bat_content)
+            terminal_log(f"[BRIDGE] Created batch wrapper at: {BAT_PATH}")
+        except Exception as e:
+            terminal_log(f"[BRIDGE ERROR] Failed to write batch file: {e}")
+            messagebox.showerror("Bridge Setup Failed", f"Failed to write batch wrapper:\n{e}", parent=tk_root)
+            return
+        EXEC_PATH = str(BAT_PATH)
+        
+    # 4. Create JSON Manifest
     manifest_data = {
         "name": HOST_NAME,
         "description": "YT-DLP Native Messaging Host",
@@ -944,7 +957,7 @@ def setup_bridge():
         messagebox.showerror("Bridge Setup Failed", f"Failed to write manifest:\n{e}", parent=tk_root)
         return
         
-    # 4. Create Registry Key (Forced 64-bit view)
+    # 5. Create Registry Key (Forced 64-bit view)
     try:
         access_rights = winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY
         key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REGISTRY_PATH, 0, access_rights)
@@ -961,8 +974,9 @@ def setup_bridge():
             "Bridge Setup Successful", 
             f"Chrome Native Messaging Host configured successfully!\n\n"
             f"Manifest: {MANIFEST_PATH}\n"
+            f"Host Path: {EXEC_PATH}\n"
             f"Registry: HKCU\\{REGISTRY_PATH}\\{HOST_NAME}\n\n"
-            f"IMPORTANT: Please RESTART Chrome completely (check system tray) for changes to take effect.",
+            f"CRITICAL: You MUST completely close Chrome (check system tray) and restart it for this to work.",
             parent=tk_root
         )
     except Exception as e:
