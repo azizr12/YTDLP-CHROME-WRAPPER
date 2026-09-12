@@ -18,9 +18,7 @@ import shutil
 import ctypes
 import ctypes.wintypes
 import winreg
-
-
-
+import tempfile
 
 # Tray dependencies
 import tkinter as tk
@@ -37,8 +35,6 @@ else:
     SCRIPT_DIR = pathlib.Path(__file__).parent.resolve()
 
 # Suppress console windows for all child processes (yt-dlp, ffmpeg, deno).
-# Without this, Windows spawns a new visible console for each subprocess
-# even though this app itself has no console attached.
 if sys.platform == 'win32':
     SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW
 else:
@@ -46,11 +42,10 @@ else:
 
 LOG_FILE = SCRIPT_DIR / "downloader.log"
 CONFIG_FILE = SCRIPT_DIR / "config.ini"
-FFMPEG_VERSION_FILE = SCRIPT_DIR / "ffmpeg.version.txt"
 
 logging.basicConfig(
     filename=LOG_FILE,
-    filemode='w',  # 'w' ensures the file is overwritten on each run
+    filemode='w',
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     encoding='utf-8'
@@ -71,17 +66,6 @@ _ctrl_handler_ref = None
 
 
 def console_ctrl_handler(ctrl_type):
-    """
-    Safety net only. Windows gives a process a few seconds to react to
-    CTRL_CLOSE_EVENT/CTRL_LOGOFF_EVENT/CTRL_SHUTDOWN_EVENT, but ultimately the
-    real console window is owned by conhost.exe (a different process), so
-    nothing this handler does can reliably keep that window itself open or
-    guarantee the process survives clicking its "X". That's why the previous
-    approach of hiding/subclassing the real console never worked consistently.
-    We no longer route the app's UI through the real console at all (see the
-    Tk-based log window below), so this handler just avoids an unexpected
-    crash/exit path and logs what happened.
-    """
     if ctrl_type in (CTRL_C_EVENT, CTRL_CLOSE_EVENT):
         terminal_log("[i] Console ctrl-event intercepted (app runs via tray/log-window regardless).")
         return True
@@ -93,18 +77,12 @@ def get_console_window():
 
 
 def hide_console():
-    """Hides the REAL OS console window once at startup. We never show the
-    real console again -- the 'Open Console' tray action opens our own
-    Tk log-viewer window instead, since that window is one we actually own
-    and can reliably show/hide/minimize."""
     hwnd = get_console_window()
     if hwnd:
         ctypes.windll.user32.ShowWindow(hwnd, SW_HIDE)
 
 
 def setup_console_tray_behavior():
-    """Hides the real console permanently and registers a ctrl-handler as a
-    safety net against unexpected termination (e.g. taskkill/logoff)."""
     global _ctrl_handler_ref
     HANDLER_ROUTINE = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong)
     _ctrl_handler_ref = HANDLER_ROUTINE(console_ctrl_handler)
@@ -113,23 +91,14 @@ def setup_console_tray_behavior():
 
 
 # ==============================================================================
-# Tk-based "console" log viewer (replaces trying to manage the real console)
+# Tk-based "console" log viewer
 # ==============================================================================
-# The real Windows console window belongs to conhost.exe, a separate process.
-# That's why intercepting its minimize/close ever worked inconsistently: you
-# cannot subclass or fully control a window you don't own. This Tk window,
-# on the other hand, belongs to THIS process, so minimize/close on it can be
-# trapped reliably every time.
-
 tk_root = None
 _log_queue = queue.Queue()
 _MAX_LOG_LINES = 2000
 
 
 def _on_log_window_unmap(event):
-    """Fires when the log window is minimized (or withdrawn). If the user
-    minimized it via the titlebar button, immediately hide it fully (send to
-    tray) instead of leaving a minimized window/taskbar entry behind."""
     global tk_root
     if tk_root is None or event.widget is not tk_root:
         return
@@ -159,10 +128,6 @@ def show_log_window():
 
 
 def run_on_ui_thread(func):
-    """Wraps a callback so it executes on the Tk mainloop thread. Tray menu
-    callbacks run on pystray's own thread, and Tkinter is not safe to touch
-    from multiple threads, so anything that touches tk_root/dialogs must be
-    scheduled back onto the UI thread via after()."""
     def wrapper(*args, **kwargs):
         if tk_root is not None:
             tk_root.after(0, lambda: func(*args, **kwargs))
@@ -184,7 +149,6 @@ def _drain_log_queue():
             text_widget.insert('end', msg + "\n")
             appended = True
         if appended:
-            # Trim to avoid unbounded growth
             line_count = int(text_widget.index('end-1c').split('.')[0])
             if line_count > _MAX_LOG_LINES:
                 text_widget.delete('1.0', f"{line_count - _MAX_LOG_LINES}.0")
@@ -198,26 +162,18 @@ def _drain_log_queue():
 
 
 def create_log_window():
-    """Creates the persistent (initially hidden) Tk root that doubles as our
-    'console' log viewer and as the parent for dialogs (file picker, about
-    box). This is a borderless (overrideredirect) window -- there's no native
-    titlebar/minimize button for Windows to fight over, which was the root
-    cause of the original bugs. It has its own custom titlebar with hide/close
-    buttons, and can be dragged by clicking and holding that titlebar."""
     global tk_root
     tk_root = tk.Tk()
     tk_root.overrideredirect(True)
     tk_root.geometry("900x500+200+150")
-    tk_root.configure(bg="#3c3c3c")  # thin border color around the content
+    tk_root.configure(bg="#3c3c3c")
 
-    # Thin border frame (gives the borderless window a visible outline)
     border = tk.Frame(tk_root, bg="#3c3c3c")
     border.pack(fill='both', expand=True)
 
     content = tk.Frame(border, bg="#1e1e1e")
     content.pack(fill='both', expand=True, padx=1, pady=1)
 
-    # --- Custom titlebar (draggable, with hide/close buttons) ---
     titlebar = tk.Frame(content, bg="#2d2d30", height=32)
     titlebar.pack(fill='x', side='top')
     titlebar.pack_propagate(False)
@@ -246,8 +202,6 @@ def create_log_window():
     hide_btn.bind("<Enter>", lambda e: hide_btn.configure(bg="#3f3f46"))
     hide_btn.bind("<Leave>", lambda e: hide_btn.configure(bg="#2d2d30"))
 
-    # Dragging: only from the titlebar itself, so selecting/copying log text
-    # in the body below isn't accidentally treated as a drag.
     def _start_drag(event):
         tk_root._drag_offset_x = event.x_root - tk_root.winfo_x()
         tk_root._drag_offset_y = event.y_root - tk_root.winfo_y()
@@ -261,8 +215,6 @@ def create_log_window():
         widget.bind("<ButtonPress-1>", _start_drag)
         widget.bind("<B1-Motion>", _do_drag)
 
-    # A small bottom-right grip lets the window be resized despite having no
-    # native border to drag from.
     grip = tk.Label(content, text="◢", bg="#1e1e1e", fg="#5a5a5a", cursor="size_nw_se")
     grip.place(relx=1.0, rely=1.0, anchor='se')
 
@@ -280,7 +232,6 @@ def create_log_window():
     grip.bind("<ButtonPress-1>", _start_resize)
     grip.bind("<B1-Motion>", _do_resize)
 
-    # --- Log text body ---
     text_widget = scrolledtext.ScrolledText(
         content, state='disabled', wrap='word',
         bg="#1e1e1e", fg="#d4d4d4", insertbackground="#d4d4d4",
@@ -289,13 +240,10 @@ def create_log_window():
     text_widget.pack(fill='both', expand=True, padx=8, pady=(4, 8))
     tk_root._log_text_widget = text_widget
 
-    # Alt+F4 (or any programmatic close attempt) still just hides to tray
     tk_root.protocol("WM_DELETE_WINDOW", hide_log_window)
-    # Safety net: if the window is ever iconified by some external action
-    # (e.g. Win+D), fully hide it instead of leaving a stray minimized window.
     tk_root.bind("<Unmap>", _on_log_window_unmap)
 
-    tk_root.withdraw()  # start hidden
+    tk_root.withdraw()
     tk_root.after(200, _drain_log_queue)
 
 
@@ -306,8 +254,6 @@ tray_icon = None
 # 2. Terminal & Tray Logging Setup
 # ==============================================================================
 def terminal_log(msg):
-    """Prints to stderr to avoid corrupting stdout native messaging stream,
-    and forwards the line to the Tk log-window queue."""
     print(msg, file=sys.stderr, flush=True)
     logging.info(msg)
     try:
@@ -316,14 +262,12 @@ def terminal_log(msg):
         pass
 
 def update_status(msg):
-    """Updates tray tooltip and prints to stderr."""
     print(f"Status: {msg}", file=sys.stderr, flush=True)
     global tray_icon
     if tray_icon:
         tray_icon.title = f"YT-DLP Manager: {msg}"
 
 def format_size(bytes_size: int) -> str:
-    """Format bytes into human-readable string."""
     for unit in ['B', 'KB', 'MB', 'GB']:
         if bytes_size < 1024:
             return f"{bytes_size:.1f} {unit}"
@@ -350,9 +294,6 @@ def open_download_folder():
         subprocess.run(['xdg-open', folder], creationflags=SUBPROCESS_FLAGS)
 
 def change_download_folder():
-    """Must run on the Tk UI thread (see run_on_ui_thread) -- uses tk_root as
-    the dialog's parent instead of spinning up a separate Tk() instance,
-    since mixing multiple Tk instances across threads is unsafe."""
     config = load_config()
     current_dir = config.get('Settings', 'download_dir', fallback=get_default_download_dir())
 
@@ -366,12 +307,10 @@ def change_download_folder():
 
     if folder:
         config.set('Settings', 'download_dir', folder)
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            config.write(f)
+        save_config(config)
         terminal_log(f"[+] Download folder changed to: {folder}")
 
 def show_about():
-    """Must run on the Tk UI thread (see run_on_ui_thread)."""
     tk_root.attributes('-topmost', True)
     messagebox.showinfo(
         "About YT-DLP Manager",
@@ -381,7 +320,7 @@ def show_about():
         "- 'Console' is now an in-app log window (reliable minimize/close-to-tray)\n"
         "- Metadata-driven FFmpeg update detection\n"
         "- Auto-updates yt-dlp, ffmpeg, and deno\n"
-        "- 4-layer fallback download strategy, every attempt writes into your download folder\n\n"
+        "- 4-layer fallback download strategy, temp files go to %TEMP%\n\n"
         f"Config Path:\n{CONFIG_FILE}",
         parent=tk_root
     )
@@ -391,27 +330,70 @@ def exit_app():
     terminal_log("Exiting application from tray menu...")
     global tray_icon
     if tray_icon:
-        tray_icon.stop() # This causes tray_icon.run() to return
-    # Force exit to immediately kill any blocking background threads (like stdin read)
+        tray_icon.stop()
     os._exit(0)
 
 def create_tray_icon_image():
-    """Dynamically generates a 64x64 icon so no external .ico file is needed."""
-    image = Image.new('RGB', (64, 64), color=(32, 33, 36)) # Dark background
+    image = Image.new('RGB', (64, 64), color=(32, 33, 36))
     draw = ImageDraw.Draw(image)
-    # Draw a light blue circle
     draw.ellipse([8, 8, 56, 56], fill=(138, 180, 248))
-    # Draw a dark play button triangle in the center
     draw.polygon([(28, 20), (48, 32), (28, 44)], fill=(32, 33, 36))
     return image
 
 # ==============================================================================
 # 4. Integrated Updater Logic
 # ==============================================================================
+def load_config():
+    config = configparser.ConfigParser()
+    default_dir = get_default_download_dir()
+    
+    if not CONFIG_FILE.exists():
+        config['Settings'] = {
+            'debug': 'True', 
+            'default_options': '--no-playlist',
+            'download_dir': default_dir
+        }
+        config['Versions'] = {
+            'yt_dlp': '',
+            'deno': '',
+            'ffmpeg': ''
+        }
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f: 
+            config.write(f)
+    else:
+        config.read(CONFIG_FILE, encoding='utf-8')
+        
+        if 'Settings' not in config:
+            config['Settings'] = {}
+        if 'download_dir' not in config['Settings']:
+            config['Settings']['download_dir'] = default_dir
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                config.write(f)
+                
+        if 'Versions' not in config:
+            config['Versions'] = {
+                'yt_dlp': '',
+                'deno': '',
+                'ffmpeg': ''
+            }
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                config.write(f)
+                
+    return config
+
+def save_config(config):
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            config.write(f)
+    except Exception as e:
+        terminal_log(f"[Config] Failed to save config: {e}")
+
 def update_ytdlp():
     terminal_log("[Updater] Checking yt-dlp...")
-    local_version = None
-    if YTDLP_PATH.exists():
+    config = load_config()
+    local_version = config.get('Versions', 'yt_dlp', fallback='').strip()
+    
+    if not local_version and YTDLP_PATH.exists():
         try:
             env = os.environ.copy()
             env["PATH"] = str(SCRIPT_DIR) + os.pathsep + env.get("PATH", "")
@@ -425,15 +407,11 @@ def update_ytdlp():
             )
             if result.returncode == 0:
                 local_version = result.stdout.strip()
+                config.set('Versions', 'yt_dlp', local_version)
+                save_config(config)
                 terminal_log(f"[Updater] Local yt-dlp binary version: {local_version}")
         except Exception as e:
             terminal_log(f"[Updater] Failed to query yt-dlp binary: {e}")
-            
-    if not local_version:
-        version_file = SCRIPT_DIR / "yt-dlp.version.txt"
-        if version_file.exists():
-            local_version = version_file.read_text().strip()
-            terminal_log(f"[Updater] Local yt-dlp text file version: {local_version}")
 
     try:
         req = urllib.request.Request("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", headers={'User-Agent': 'Mozilla/5.0'})
@@ -460,8 +438,8 @@ def update_ytdlp():
         urllib.request.urlretrieve(exe_asset["browser_download_url"], temp_exe)
         if YTDLP_PATH.exists(): YTDLP_PATH.unlink()
         temp_exe.rename(YTDLP_PATH)
-        version_file = SCRIPT_DIR / "yt-dlp.version.txt"
-        version_file.write_text(latest_version)
+        config.set('Versions', 'yt_dlp', latest_version)
+        save_config(config)
         terminal_log(f"[+] yt-dlp updated successfully to {latest_version}.")
     except Exception as e:
         terminal_log(f"[X] yt-dlp download failed: {e}")
@@ -469,8 +447,10 @@ def update_ytdlp():
 
 def update_deno():
     terminal_log("[Updater] Checking deno...")
-    local_version = None
-    if DENO_PATH.exists():
+    config = load_config()
+    local_version = config.get('Versions', 'deno', fallback='').strip()
+    
+    if not local_version and DENO_PATH.exists():
         try:
             result = subprocess.run(
                 [str(DENO_PATH), "--version"], 
@@ -482,15 +462,11 @@ def update_deno():
             if result.returncode == 0:
                 first_line = result.stdout.splitlines()[0]
                 local_version = first_line.split()[1] 
+                config.set('Versions', 'deno', local_version)
+                save_config(config)
                 terminal_log(f"[Updater] Local deno binary version: {local_version}")
         except Exception as e:
             terminal_log(f"[Updater] Failed to query deno binary: {e}")
-            
-    if not local_version:
-        version_file = SCRIPT_DIR / "deno.version.txt"
-        if version_file.exists():
-            local_version = version_file.read_text().strip().lstrip("v")
-            terminal_log(f"[Updater] Local deno text file version: {local_version}")
 
     try:
         req = urllib.request.Request("https://dl.deno.land/release-latest.txt", headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
@@ -521,8 +497,8 @@ def update_deno():
         temp_zip.unlink()
         if DENO_PATH.exists(): DENO_PATH.unlink()
         temp_exe.rename(DENO_PATH)
-        version_file = SCRIPT_DIR / "deno.version.txt"
-        version_file.write_text(latest_version)
+        config.set('Versions', 'deno', latest_version)
+        save_config(config)
         terminal_log(f"[+] deno updated successfully to {latest_version}.")
     except Exception as e:
         terminal_log(f"[X] deno download failed: {e}")
@@ -531,8 +507,9 @@ def update_deno():
 
 def update_ffmpeg():
     terminal_log("[Updater] Checking ffmpeg...")
+    config = load_config()
+    local_asset_name = config.get('Versions', 'ffmpeg', fallback='').strip()
     
-    # 1. Get latest release from GitHub API
     try:
         req = urllib.request.Request(
             "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest", 
@@ -544,7 +521,6 @@ def update_ffmpeg():
         terminal_log(f"[Updater] ffmpeg API error: {e}")
         return False
     
-    # 2. Find matching asset
     asset = None
     for a in release.get("assets", []):
         if a["name"].startswith("ffmpeg-master-latest-win64-gpl") and a["name"].endswith(".zip"):
@@ -556,36 +532,14 @@ def update_ffmpeg():
         return False
         
     latest_asset_name = asset["name"]
-    release_id = release.get("id")
-    author_id = release.get("author", {}).get("id")
     
-    # 3. Load local metadata
-    local_meta = {}
-    if FFMPEG_VERSION_FILE.exists():
-        try:
-            content = FFMPEG_VERSION_FILE.read_text().strip()
-            if content.startswith("{"):
-                local_meta = json.loads(content)
-            else:
-                # Legacy: just asset name
-                local_meta = {"asset_name": content}
-        except Exception:
-            local_meta = {}
-            
-    local_asset_name = local_meta.get("asset_name", "None")
     terminal_log(f"[Updater] Latest: {latest_asset_name}")
     terminal_log(f"[Updater] Local:  {local_asset_name}")
-    terminal_log(f"[Updater] Release ID: {release_id} | Author ID: {author_id}")
     
-    # 4. Check if update is needed
     needs_update = False
-    if not local_meta:
+    if not local_asset_name:
         needs_update = True
-    elif local_meta.get("release_id") != release_id:
-        needs_update = True
-    elif local_meta.get("asset_name") != latest_asset_name:
-        needs_update = True
-    elif local_meta.get("author_id") != author_id:
+    elif local_asset_name != latest_asset_name:
         needs_update = True
     elif not FFMPEG_PATH.exists():
         needs_update = True
@@ -594,7 +548,6 @@ def update_ffmpeg():
         terminal_log("[+] ffmpeg is already up to date.")
         return True
         
-    # 5. Download
     if size := asset.get("size"):
         terminal_log(f"[Updater] Download size: {format_size(size)}")
     terminal_log(f"[Updater] Downloading ffmpeg ({latest_asset_name})...")
@@ -610,14 +563,12 @@ def update_ffmpeg():
         if temp_zip.exists(): temp_zip.unlink()
         return False
         
-    # 6. Extract
     terminal_log("[Updater] Extracting ffmpeg...")
     try:
         with zipfile.ZipFile(temp_zip, 'r') as zip_ref:
             zip_ref.extractall(SCRIPT_DIR)
         temp_zip.unlink()
         
-        # Find extracted root folder (e.g., "ffmpeg-master-latest-win64-gpl")
         extracted_root = None
         for item in SCRIPT_DIR.iterdir():
             if item.is_dir() and item.name.startswith("ffmpeg-") and (item / "bin").exists():
@@ -626,7 +577,6 @@ def update_ffmpeg():
                 
         if extracted_root:
             bin_dir = extracted_root / "bin"
-            # Move ALL files from the bin directory (includes .exe and required .dll files)
             for file_path in bin_dir.iterdir():
                 if file_path.is_file():
                     dst = SCRIPT_DIR / file_path.name
@@ -634,7 +584,6 @@ def update_ffmpeg():
                         dst.unlink()
                     shutil.move(str(file_path), str(dst))
             
-            # Clean up the extracted root folder (doc, presets, and the now-empty bin folder)
             shutil.rmtree(extracted_root, ignore_errors=True)
             terminal_log("[+] ffmpeg and its dependencies extracted successfully.")
         else:
@@ -646,20 +595,13 @@ def update_ffmpeg():
         if temp_zip.exists(): temp_zip.unlink()
         return False
         
-    # 7. Verify and Save Metadata
     if not FFMPEG_PATH.exists():
         terminal_log("[X] ffmpeg.exe not found after extraction")
         return False
         
-    metadata = {
-        "release_id": release_id,
-        "author_id": author_id,
-        "asset_name": latest_asset_name,
-        "updated_at": release.get("updated_at")
-    }
-    FFMPEG_VERSION_FILE.write_text(json.dumps(metadata, indent=2))
+    config.set('Versions', 'ffmpeg', latest_asset_name)
+    save_config(config)
     
-    # 8. Show version
     try:
         env = os.environ.copy()
         env["PATH"] = str(SCRIPT_DIR) + os.pathsep + env.get("PATH", "")
@@ -683,7 +625,6 @@ def updater_loop():
     update_file = SCRIPT_DIR / "last_update.txt"
     today = datetime.date.today()
     
-    # FFmpeg: Always check (uses smart metadata to skip if truly up to date)
     update_ffmpeg()
 
     if update_file.exists():
@@ -727,7 +668,6 @@ def process_download_request(request, config):
     url = request.get('url')
     cookies_data = request.get('cookies')
     
-    # 1. Parse Custom Options from Extension and INI
     ext_options_raw = request.get('options', [])
     ext_options = shlex.split(ext_options_raw) if isinstance(ext_options_raw, str) else ext_options_raw
     
@@ -737,12 +677,14 @@ def process_download_request(request, config):
     custom_options = ini_options + ext_options
     debug_mode = config.getboolean('Settings', 'debug', fallback=False)
     
-    # 2. Define Export and Temp Directories
+    # Export Directory (Finished Downloads)
     export_dir = config.get('Settings', 'download_dir', fallback=get_default_download_dir())
     export_path = pathlib.Path(export_dir)
     export_path.mkdir(parents=True, exist_ok=True)
     
-    temp_dir = SCRIPT_DIR / "temp_downloads"
+    # Temp Directory (System %TEMP%)
+    system_temp = os.environ.get('TEMP') or os.environ.get('TMP') or tempfile.gettempdir()
+    temp_dir = pathlib.Path(system_temp) / "ytdlp_temp_downloads"
     temp_dir.mkdir(parents=True, exist_ok=True)
     
     logging.info(f"Received request for URL: {url}")
@@ -756,13 +698,11 @@ def process_download_request(request, config):
     if not url:
         logging.error("No URL provided in request.")
         return {"status": "error", "message": "No URL provided in request"}
-
-    # 3. Setup yt-dlp arguments with built-in temp-to-export path handling
-    # yt-dlp will download to 'temp' and automatically move to 'home' (export) on success
     base_args = [
         str(YTDLP_PATH),
-        '-P', f'temp:{temp_dir},home:{export_path}',
-        '--newline'  # Ensures line-by-line output for live logging
+        '-P', f'temp:{temp_dir}',
+        '-P', f'home:{export_path}',
+        '--newline'
     ]
 
     cookies_file_ready = False
@@ -775,7 +715,6 @@ def process_download_request(request, config):
         except Exception as e:
             logging.error(f"Failed to write cookies.txt: {e}")
 
-    # 4-Layer Fallback Strategy
     variations = [
         {"desc": "Standard (No cookies)", "args": [], "needs_cookies": False},
         {"desc": "Standard (With cookies)", "args": ['--cookies', str(COOKIES_FILE_PATH)], "needs_cookies": True},
@@ -787,7 +726,6 @@ def process_download_request(request, config):
     last_error_msg = "Unknown error"
     success = False
 
-    # Ensure subprocess can find ffmpeg/yt-dlp in SCRIPT_DIR
     env = os.environ.copy()
     env["PATH"] = str(SCRIPT_DIR) + os.pathsep + env.get("PATH", "")
 
@@ -797,7 +735,6 @@ def process_download_request(request, config):
             
         attempt_num += 1
         
-        # Construct final command
         command = base_args.copy()
         command.extend(custom_options)
         command.extend(variation["args"])
@@ -810,7 +747,6 @@ def process_download_request(request, config):
             print(f"\n[DEBUG] === ATTEMPT {attempt_num} ===", file=sys.stderr)
             print(f"[DEBUG] Command: {' '.join(command)}", file=sys.stderr)
 
-        # LIVE STREAMING EXECUTION
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -819,7 +755,7 @@ def process_download_request(request, config):
             encoding='utf-8',
             errors='replace',
             env=env,
-            creationflags=SUBPROCESS_FLAGS  # Keeps execution silent on Windows
+            creationflags=SUBPROCESS_FLAGS
         )
 
         logging.info(f"--- yt-dlp Attempt {attempt_num} Output Start ---")
@@ -848,7 +784,6 @@ def process_download_request(request, config):
             if output_lines:
                 last_error_msg = output_lines[-1]
 
-    # Cleanup cookies
     if os.path.exists(COOKIES_FILE_PATH):
         try:
             os.remove(COOKIES_FILE_PATH)
@@ -862,32 +797,10 @@ def process_download_request(request, config):
         return {"status": "error", "message": f"All attempts failed. Last error: {last_error_msg}"}
 
 
-
-def load_config():
-    config = configparser.ConfigParser()
-    default_dir = get_default_download_dir()
-    
-    if not CONFIG_FILE.exists():
-        config['Settings'] = {
-            'debug': 'True', 
-            'default_options': '--no-playlist',
-            'download_dir': default_dir
-        }
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f: 
-            config.write(f)
-    else:
-        config.read(CONFIG_FILE, encoding='utf-8')
-        if 'download_dir' not in config['Settings']:
-            config['Settings']['download_dir'] = default_dir
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                config.write(f)
-    return config
-
 # ==============================================================================
 # 7. Main Event Loop & Dual-Mode Initialization
 # ==============================================================================
 def native_messaging_loop():
-    """Runs in a background thread to handle browser requests without blocking the tray/terminal."""
     config = load_config()
     while True:
         try:
@@ -896,38 +809,45 @@ def native_messaging_loop():
             send_message(response)
         except EOFError:
             terminal_log("Browser closed the connection. Tray app and terminal remain active.")
-            break # Break loop, but app stays alive because tray_icon.run() blocks main thread
+            break
         except Exception as e:
             terminal_log(f"Host error: {str(e)}")
-            # Continue loop to accept new connections if browser restarts
 
 def setup_bridge():
     """Sets up Chrome Native Messaging Host (BRIDGE) in the current directory."""
-    # 1. Get Extension ID via GUI prompt
+    terminal_log("[BRIDGE] Setup initiated. Waiting for Extension ID input...")
+    
+    # Ensure the root window is visible so the dialog attaches properly and pops up as GUI
+    was_withdrawn = False
+    if tk_root is not None and tk_root.state() == 'withdrawn':
+        tk_root.deiconify()
+        was_withdrawn = True
+
     ext_id = simpledialog.askstring(
         "Chrome Extension ID", 
         "Paste your Chrome Extension ID here:\n(Leave blank to skip allowed_origins, but Chrome may block the host)",
         parent=tk_root
     )
     
-    allowed_origins = []
-    if ext_id and ext_id.strip():
-        allowed_origins = [f"chrome-extension://{ext_id.strip()}/"]
+    if was_withdrawn and tk_root is not None:
+        tk_root.withdraw()
         
-    # 2. Define Paths (All in SCRIPT_DIR)
+    if ext_id is None:
+        terminal_log("[BRIDGE] Setup cancelled by user.")
+        return
+        
+    ext_id = ext_id.strip()
+    allowed_origins = [f"chrome-extension://{ext_id}/"] if ext_id else []
+        
     HOST_NAME = "com.wrapper.ytdlp_host"
     MANIFEST_PATH = SCRIPT_DIR / f"{HOST_NAME}.json"
     REGISTRY_PATH = r"Software\Google\Chrome\NativeMessagingHosts"
     
-    # 3. Determine Execution Path
-    # Chrome Native Messaging REQUIRES the manifest 'path' to be a direct executable.
-    # It does NOT support "python script.py" directly. We must use a .bat wrapper if not frozen.
     if getattr(sys, 'frozen', False):
         EXEC_PATH = str(sys.executable)
         terminal_log("[BRIDGE] Detected frozen executable. Pointing manifest directly to .exe")
     else:
         BAT_PATH = SCRIPT_DIR / "run_host.bat"
-        # Create a robust batch file wrapper that passes all arguments (%*)
         bat_content = f'@echo off\n"{sys.executable}" "{pathlib.Path(__file__).resolve()}" %*\n'
         try:
             with open(BAT_PATH, 'w', encoding='utf-8') as f:
@@ -939,7 +859,6 @@ def setup_bridge():
             return
         EXEC_PATH = str(BAT_PATH)
         
-    # 4. Create JSON Manifest
     manifest_data = {
         "name": HOST_NAME,
         "description": "YT-DLP Native Messaging Host",
@@ -957,13 +876,11 @@ def setup_bridge():
         messagebox.showerror("Bridge Setup Failed", f"Failed to write manifest:\n{e}", parent=tk_root)
         return
         
-    # 5. Create Registry Key (Forced 64-bit view)
     try:
         access_rights = winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY
         key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REGISTRY_PATH, 0, access_rights)
         subkey = winreg.CreateKeyEx(key, HOST_NAME, 0, access_rights)
         
-        # Set the default value to the JSON manifest path
         winreg.SetValueEx(subkey, "", 0, winreg.REG_SZ, str(MANIFEST_PATH))
         
         winreg.CloseKey(subkey)
@@ -987,33 +904,57 @@ def setup_bridge():
             parent=tk_root
         )
 
+def ensure_binaries_exist():
+    """Checks if core binaries exist. If missing, forces an immediate re-download."""
+    terminal_log("[Startup] Verifying core binaries...")
+    missing = []
+    
+    if not YTDLP_PATH.exists():
+        missing.append("yt-dlp")
+    if not DENO_PATH.exists():
+        missing.append("deno")
+    if not FFMPEG_PATH.exists():
+        missing.append("ffmpeg")
+        
+    if missing:
+        terminal_log(f"[Startup] Missing binaries detected: {', '.join(missing)}. Forcing download...")
+        config = load_config()
+        
+        if "yt-dlp" in missing:
+            config.set('Versions', 'yt_dlp', '') # Clear version to force update
+            save_config(config)
+            update_ytdlp()
+            
+        if "deno" in missing:
+            config.set('Versions', 'deno', '')
+            save_config(config)
+            update_deno()
+            
+        if "ffmpeg" in missing:
+            config.set('Versions', 'ffmpeg', '')
+            save_config(config)
+            update_ffmpeg()
+            
+        terminal_log("[Startup] Binary restoration complete.")
+    else:
+        terminal_log("[Startup] All core binaries are present.")
 
 def main():
     global tray_icon
 
-    # Real OS console is hidden immediately and permanently. All app "console"
-    # output/interaction now goes through our own Tk log window instead, since
-    # the real console is owned by a separate process (conhost.exe) and can't
-    # be reliably managed (that mismatch was the root cause of the old
-    # minimize/close-to-tray bugs).
     create_log_window()
     setup_console_tray_behavior()
-
+    ensure_binaries_exist()
     terminal_log("="*60)
     terminal_log("YT-DLP Manager started (System Tray + in-app log window)")
     terminal_log("Use Tray -> 'Open Console' to view logs, or 'Exit' to quit.")
     terminal_log("="*60)
 
-    # Start Daily Updater in a background thread
     threading.Thread(target=updater_loop, daemon=True).start()
-
-    # Start Native Messaging listener in a background thread
     threading.Thread(target=native_messaging_loop, daemon=True).start()
 
     icon_image = create_tray_icon_image()
 
-    # Menu callbacks that touch Tkinter must be scheduled onto the UI thread,
-    # since pystray invokes them from its own thread.
     menu = pystray.Menu(
         pystray.MenuItem('Open Console', run_on_ui_thread(show_log_window)),
         pystray.MenuItem('Close to Tray', run_on_ui_thread(hide_log_window)),
@@ -1037,9 +978,6 @@ def main():
         menu
     )
 
-    # Run the tray icon in its own background thread (it manages its own
-    # window/message loop independent of Tk) and keep Tk's mainloop on the
-    # main thread, which Tkinter requires.
     threading.Thread(target=tray_icon.run, daemon=True).start()
 
     terminal_log("System tray icon initialized. Waiting for requests...")
