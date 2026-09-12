@@ -1,5 +1,5 @@
-This extension is meant to bridge between chrome and yt-dlp to download video on instant than copying link and open ytdlp and do all the boring stuff
-first you install the extention into chrome aand copy its id
-you open the python file and run and wait for it to install all dependency
-then you bridge it by giving it the extention id
-after that the python is just listening for extention and you it to download from chrome you dont need to touch yt-dlp at all
+- This extension is meant to bridge between chrome and yt-dlp to download video on instant than copying link and open ytdlp and do all the boring stuff
+- first you install the extention into chrome and copy its ID
+- and open the python file and run it and wait for it to install all dependency wait like 5 minutes
+- then you select bridge on tray icon by giving it the extention id
+- after that the python is just listening for extension and you use it to download from chrome you don't need to touch yt-dlp at all
