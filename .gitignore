@@ -7,8 +7,10 @@
 *.exe
 *.mp3
 *.ini
-
-
+*.dll
+*.json
+*.ini
+com.wrapper.ytdlp_host.json
 
 
 

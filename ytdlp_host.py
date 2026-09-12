@@ -17,11 +17,14 @@ import zipfile
 import shutil
 import ctypes
 import ctypes.wintypes
+import winreg
+
+
 
 
 # Tray dependencies
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog
 from PIL import Image, ImageDraw
 import pystray
 
@@ -898,6 +901,79 @@ def native_messaging_loop():
             terminal_log(f"Host error: {str(e)}")
             # Continue loop to accept new connections if browser restarts
 
+def setup_bridge():
+    """Sets up Chrome Native Messaging Host (BRIDGE) in the current directory."""
+    # 1. Get Extension ID via GUI prompt
+    ext_id = simpledialog.askstring(
+        "Chrome Extension ID", 
+        "Paste your Chrome Extension ID here:\n(Leave blank to skip allowed_origins, but Chrome may block the host)",
+        parent=tk_root
+    )
+    
+    allowed_origins = []
+    if ext_id and ext_id.strip():
+        allowed_origins = [f"chrome-extension://{ext_id.strip()}/"]
+        
+    # 2. Define Paths (All in SCRIPT_DIR)
+    HOST_NAME = "com.wrapper.ytdlp_host"
+    MANIFEST_PATH = SCRIPT_DIR / f"{HOST_NAME}.json"
+    
+    # Point directly to this executable (if frozen) or the python script
+    if getattr(sys, 'frozen', False):
+        EXEC_PATH = str(sys.executable)
+    else:
+        EXEC_PATH = f'python "{pathlib.Path(__file__).resolve()}"'
+        
+    REGISTRY_PATH = r"Software\Google\Chrome\NativeMessagingHosts"
+    
+    # 3. Create JSON Manifest
+    manifest_data = {
+        "name": HOST_NAME,
+        "description": "YT-DLP Native Messaging Host",
+        "path": EXEC_PATH,
+        "type": "stdio",
+        "allowed_origins": allowed_origins
+    }
+    
+    try:
+        with open(MANIFEST_PATH, 'w', encoding='utf-8') as f:
+            json.dump(manifest_data, f, indent=2)
+        terminal_log(f"[BRIDGE] Saved manifest to: {MANIFEST_PATH}")
+    except Exception as e:
+        terminal_log(f"[BRIDGE ERROR] Failed to write manifest: {e}")
+        messagebox.showerror("Bridge Setup Failed", f"Failed to write manifest:\n{e}", parent=tk_root)
+        return
+        
+    # 4. Create Registry Key (Forced 64-bit view)
+    try:
+        access_rights = winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY
+        key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REGISTRY_PATH, 0, access_rights)
+        subkey = winreg.CreateKeyEx(key, HOST_NAME, 0, access_rights)
+        
+        # Set the default value to the JSON manifest path
+        winreg.SetValueEx(subkey, "", 0, winreg.REG_SZ, str(MANIFEST_PATH))
+        
+        winreg.CloseKey(subkey)
+        winreg.CloseKey(key)
+        terminal_log(f"[BRIDGE] Registry key created: HKCU\\{REGISTRY_PATH}\\{HOST_NAME}")
+        
+        messagebox.showinfo(
+            "Bridge Setup Successful", 
+            f"Chrome Native Messaging Host configured successfully!\n\n"
+            f"Manifest: {MANIFEST_PATH}\n"
+            f"Registry: HKCU\\{REGISTRY_PATH}\\{HOST_NAME}\n\n"
+            f"IMPORTANT: Please RESTART Chrome completely (check system tray) for changes to take effect.",
+            parent=tk_root
+        )
+    except Exception as e:
+        terminal_log(f"[BRIDGE ERROR] Failed to write to registry: {e}")
+        messagebox.showerror(
+            "Bridge Setup Failed", 
+            f"Failed to write to registry:\n{e}\n\nPlease ensure you have the necessary permissions.", 
+            parent=tk_root
+        )
+
+
 def main():
     global tray_icon
 
@@ -928,6 +1004,10 @@ def main():
         pystray.MenuItem('Open Console', run_on_ui_thread(show_log_window)),
         pystray.MenuItem('Close to Tray', run_on_ui_thread(hide_log_window)),
         pystray.Menu.SEPARATOR,
+        
+        pystray.MenuItem('BRIDGE (Setup Chrome Host)', run_on_ui_thread(setup_bridge)),
+        pystray.Menu.SEPARATOR,
+        
         pystray.MenuItem('Open Download Folder', open_download_folder),
         pystray.MenuItem('Change Download Folder', run_on_ui_thread(change_download_folder)),
         pystray.Menu.SEPARATOR,
