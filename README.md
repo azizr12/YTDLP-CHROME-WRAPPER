@@ -3,3 +3,5 @@
 - and open the python file and run it and wait for it to install all dependency wait like 5 minutes
 - then you select bridge on tray icon by giving it the extention id
 - after that the python is just listening for extension and you use it to download from chrome you don't need to touch yt-dlp at all
+- also extention support the use of cookies to support private video
+- you can also download audio only or a whole playlist
