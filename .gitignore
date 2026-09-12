@@ -1,4 +1,3 @@
-
 *.txt
 *.log
 *.mp4
@@ -10,20 +9,9 @@
 *.dll
 *.json
 *.ini
-com.wrapper.ytdlp_host.json
-
-
-
-
-
 Thumbs.db
 ehthumbs.db
 Desktop.ini
-
-
 com.wrapper.ytdlp_host.json
 config.ini
-*.json
-*.ini
-com.wrapper.ytdlp_host.json
 config.ini
