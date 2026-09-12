@@ -848,7 +848,8 @@ def setup_bridge():
         terminal_log("[BRIDGE] Detected frozen executable. Pointing manifest directly to .exe")
     else:
         BAT_PATH = SCRIPT_DIR / "run_host.bat"
-        bat_content = f'@echo off\n"{sys.executable}" "{pathlib.Path(__file__).resolve()}" %*\n'
+        # Added '--host' flag here so Chrome launches it in headless mode
+        bat_content = f'@echo off\n"{sys.executable}" "{pathlib.Path(__file__).resolve()}" --host %*\n'
         try:
             with open(BAT_PATH, 'w', encoding='utf-8') as f:
                 f.write(bat_content)
@@ -978,10 +979,17 @@ def main():
         menu
     )
 
-    threading.Thread(target=tray_icon.run, daemon=True).start()
+    tray_icon.run_detached()
 
     terminal_log("System tray icon initialized. Waiting for requests...")
     tk_root.mainloop()
 
 if __name__ == '__main__':
-    main()
+    # Check if launched by Chrome as a Native Messaging Host
+    if len(sys.argv) > 1 and sys.argv[1] == '--host':
+        terminal_log("Running in Native Messaging Host mode (Headless)...")
+        setup_console_tray_behavior()
+        ensure_binaries_exist()
+        native_messaging_loop() # Blocks here, handles the download, then exits
+    else:
+        main() # Normal GUI/Tray mode

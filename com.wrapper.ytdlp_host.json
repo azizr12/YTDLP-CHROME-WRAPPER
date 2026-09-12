@@ -1,9 +1,0 @@
-{
-  "name": "com.wrapper.ytdlp_host",
-  "description": "YT-DLP Native Messaging Host",
-  "path": "C:\\Users\\Admin\\Documents\\GitHub\\YTDLP CHROME WRAPPER\\run_host.bat",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://jnbagodkokienlphhifgkfcffahfaokl/"
-  ]
-}
