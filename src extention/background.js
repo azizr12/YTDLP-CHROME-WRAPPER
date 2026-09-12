@@ -1,48 +1,25 @@
-const HOST_NAME = "com.wrapper.ytdlp_host"; 
-console.log("[BG 1] background.js initialized. Host Name:", HOST_NAME);
-
-// --- Helpers ---
-function showNotification(id, title, message) {
-    console.log(`[BG NOTIFY] Showing notification: ${title} - ${message}`);
-    chrome.notifications.create(id, {
-        type: 'basic', iconUrl: 'icon128.png', title: title, message: message, priority: 2
-    }, () => setTimeout(() => chrome.notifications.clear(id), 7000));
-}
-
-function updateBadge(status) {
-    if (status === "success") { chrome.action.setBadgeText({ text: "✓" }); chrome.action.setBadgeBackgroundColor({ color: "#4CAF50" }); } 
-    else if (status === "error") { chrome.action.setBadgeText({ text: "!" }); chrome.action.setBadgeBackgroundColor({ color: "#F44336" }); } 
-    else if (status === "downloading") { chrome.action.setBadgeText({ text: "⏳" }); chrome.action.setBadgeBackgroundColor({ color: "#FF9800" }); }
-    setTimeout(() => chrome.action.setBadgeText({ text: "" }), 15000);
-}
-
-// --- Message Listener ---
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    console.log("[BG 2] >>> MESSAGE RECEIVED FROM POPUP <<<", request);
-    
-    if (request.action === "START_DOWNLOAD") {
-        console.log("[BG 3] Triggering startDownloadProcess...");
-        startDownloadProcess(request.url, request.options);
-        sendResponse({ message: "Download process initiated." });
-        return true; // Keep the message channel open for async response
-    }
-});
+// --- Configuration ---
+const HOST_NAME = "com.wrapper.ytdlp_host"; // MUST match the "name" in native manifest JSON
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1500; // 1.5 seconds between attempts
 
 // --- Core Logic ---
-async function startDownloadProcess(url, options) {
+async function startDownloadProcess(url, options, attempt = 1) {
     if (!url || url.startsWith('chrome') || url.startsWith('edge')) {
         console.error("[BG ERROR] Internal browser URL detected. Aborting.");
-        showNotification('error', 'Downloader', 'Cannot download internal pages.');
+        showNotification('error', 'Downloader', 'Cannot download internal browser pages.');
         return;
     }
 
-    showNotification('start', 'Downloader', 'Extracting cookies...');
-    updateBadge("downloading");
+    console.log(`[BG] Starting download process (Attempt ${attempt}/${MAX_RETRIES}) for: ${url}`);
+    showNotification('start', 'Downloader', `Preparing download (Attempt ${attempt}/${MAX_RETRIES})...`);
+    updateBadge("retry");
 
     try {
-        console.log("[BG 4] Extracting cookies for URL:", url);
+        // 1. Extract Cookies
+        console.log("[BG] Extracting cookies for URL:", url);
         const cookies = await chrome.cookies.getAll({ url: url });
-        console.log(`[BG 5] Found ${cookies.length} cookies.`);
+        console.log(`[BG] Found ${cookies.length} cookies.`);
         
         let cookieString = "# Netscape HTTP Cookie File\n";
         cookies.forEach(cookie => {
@@ -54,11 +31,17 @@ async function startDownloadProcess(url, options) {
             cookieString += `${domain}\t${flag}\t${path}\t${secure}\t${expiration}\t${cookie.name}\t${cookie.value}\n`;
         });
 
-        console.log("[BG 6] Opening Native Messaging Port to Python...");
+        // 2. Establish Native Messaging Port
+        console.log(`[BG] Opening Native Messaging Port to Python (Attempt ${attempt})...`);
         const port = chrome.runtime.connectNative(HOST_NAME);
-        
+        let isResolved = false; // Flag to prevent race conditions between onMessage and onDisconnect
+
+        // 3. Handle Incoming Messages
         port.onMessage.addListener((response) => {
-            console.log("[BG 7] >>> MESSAGE RECEIVED FROM PYTHON <<<", response);
+            if (isResolved) return;
+            isResolved = true;
+            console.log("[BG] >>> MESSAGE RECEIVED FROM PYTHON <<<", response);
+            
             if (response && response.status === "success") {
                 showNotification('success', 'Download Complete!', response.message);
                 updateBadge("success");
@@ -68,23 +51,95 @@ async function startDownloadProcess(url, options) {
             }
         });
 
+        // 4. Handle Disconnection (Success, Failure, or Host Not Found)
         port.onDisconnect.addListener(() => {
+            if (isResolved) return; // Already handled successfully or with a final error by onMessage
+            
             if (chrome.runtime.lastError) {
-                console.error("[BG ERROR] Native Port Disconnected unexpectedly:", chrome.runtime.lastError.message);
-                showNotification('error', 'Connection Lost', chrome.runtime.lastError.message);
-                updateBadge("error");
+                console.error(`[BG ERROR] Native Port Disconnected unexpectedly (Attempt ${attempt}):`, chrome.runtime.lastError.message);
+                
+                // RETRY LOGIC
+                if (attempt < MAX_RETRIES) {
+                    console.log(`[BG] Retrying in ${RETRY_DELAY_MS}ms...`);
+                    showNotification('start', 'Downloader', `Host unreachable. Retrying (${attempt}/${MAX_RETRIES})...`);
+                    
+                    setTimeout(() => {
+                        startDownloadProcess(url, options, attempt + 1);
+                    }, RETRY_DELAY_MS);
+                } else {
+                    console.error("[BG FATAL] Max retries reached. Giving up.");
+                    showNotification('error', 'Connection Failed', `Could not connect to the native host after ${MAX_RETRIES} attempts. Please ensure the Python application is running.`);
+                    updateBadge("error");
+                }
             } else {
-                console.log("[BG 8] Native Port closed gracefully.");
+                console.log("[BG] Native Port closed gracefully.");
+                if (!isResolved) {
+                    isResolved = true;
+                    updateBadge("default");
+                }
             }
         });
 
+        // 5. Send Payload
         const payload = { action: "download", url: url, cookies: cookieString, options: options };
-        console.log("[BG 9] Sending payload to Python:", payload);
-        port.postMessage(payload);
+        console.log("[BG] Sending payload to Python:", payload);
+        
+        try {
+            port.postMessage(payload);
+        } catch (postError) {
+            console.error("[BG ERROR] Failed to post message (Port may be dead):", postError);
+            // Manually trigger the disconnect error handling to initiate retry
+            if (!isResolved && attempt < MAX_RETRIES) {
+                setTimeout(() => {
+                    startDownloadProcess(url, options, attempt + 1);
+                }, RETRY_DELAY_MS);
+            } else if (!isResolved) {
+                showNotification('error', 'Connection Failed', 'Failed to send data to the native host.');
+                updateBadge("error");
+            }
+        }
 
     } catch (error) {
         console.error("[BG FATAL ERROR] Exception in startDownloadProcess:", error);
-        showNotification('error', 'Extension Error', error.message);
-        updateBadge("error");
+        if (attempt < MAX_RETRIES) {
+            setTimeout(() => {
+                startDownloadProcess(url, options, attempt + 1);
+            }, RETRY_DELAY_MS);
+        } else {
+            showNotification('error', 'Extension Error', error.message);
+            updateBadge("error");
+        }
     }
 }
+
+// --- Helper Functions ---
+function showNotification(type, title, message) {
+    chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icon128.png',
+        title: title,
+        message: message
+    });
+}
+
+function updateBadge(status) {
+    const colors = {
+        'downloading': '#FF0000',
+        'success': '#00FF00',
+        'error': '#FF0000',
+        'retry': '#FFA500', // Orange for retry state
+        'default': '#555555'
+    };
+    chrome.action.setBadgeBackgroundColor({ color: colors[status] || colors['default'] });
+    chrome.action.setBadgeText({ text: status === 'default' ? '' : status.charAt(0).toUpperCase() });
+}
+
+// --- Message Listener from Popup ---
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "START_DOWNLOAD") {
+        console.log("[BG] Received START_DOWNLOAD request from popup.");
+        startDownloadProcess(request.url, request.options);
+        sendResponse({ status: "received" });
+    }
+    return true; // Keep the message channel open for async sendResponse
+});
